@@ -1,14 +1,21 @@
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import java.nio.file.Files;
+
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import static com.openai.core.ObjectMappers.jsonMapper;
 import com.openai.client.OpenAIClient;
 import com.openai.client.okhttp.OpenAIOkHttpClient;
 import com.openai.models.FunctionDefinition;
 import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
+import com.openai.models.chat.completions.ChatCompletionMessage;
 import com.openai.models.chat.completions.ChatCompletionTool;
 import com.openai.core.JsonValue;
 
@@ -76,6 +83,39 @@ public class Main {
         
         if (response.choices().isEmpty()) {
             throw new RuntimeException("no choices in response");
+        }
+
+        ChatCompletionMessage message = response.choices().get(0).message();
+        if (message.toolCalls().isPresent() && !message.toolCalls().get().isEmpty()) {
+            Object firstToolCall = message.toolCalls().get().get(0);
+            JsonNode toolCallNode = jsonMapper().valueToTree(firstToolCall);
+
+            String toolName = toolCallNode.path("function").path("name").asText(null);
+            String arguments = toolCallNode.path("function").path("arguments").asText(null);
+
+            if (toolName == null) {
+                System.out.println("Tool name not specified");
+            }
+
+            if (arguments == null) {
+                System.out.println("File path not specified in arguments");
+            }
+
+            if ("Read".equals(toolName)) {
+                JsonNode argsNode = jsonMapper().readTree(arguments);
+                JsonNode filePathNode = argsNode.get("file_path");
+                if (filePathNode == null || filePathNode.isNull()) {
+                    throw new RuntimeException("Read tool call missing file_path");
+                }
+
+                String filePath = filePathNode.asText();
+                byte[] bytes = Files.readAllBytes(Paths.get(filePath));
+
+                // IMPORTANT: write raw bytes, no extra newline/formatting
+                System.out.write(bytes);
+                System.out.flush();
+                return;
+            }
         }
         
         // You can use print statements as follows for debugging, they'll be visible when running tests.
