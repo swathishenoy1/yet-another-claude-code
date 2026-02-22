@@ -4,7 +4,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -17,6 +17,7 @@ import com.openai.models.chat.completions.ChatCompletion;
 import com.openai.models.chat.completions.ChatCompletionCreateParams;
 import com.openai.models.chat.completions.ChatCompletionMessage;
 import com.openai.models.chat.completions.ChatCompletionTool;
+import com.openai.models.chat.completions.ChatCompletionToolMessageParam;
 import com.openai.core.JsonValue;
 
 public class Main {
@@ -71,58 +72,74 @@ public class Main {
                                         .parameters(JsonValue.from(parameters))
                                         .build()).build();
 
-        ChatCompletion response =
-                client.chat()
-                        .completions()
-                        .create(
-                                ChatCompletionCreateParams.builder()
-                                        .model("anthropic/claude-haiku-4.5")
-                                        .addUserMessage(prompt)
-                                        .addTool(readTool)
-                                        .build());
         
-        if (response.choices().isEmpty()) {
-            throw new RuntimeException("no choices in response");
-        }
 
-        ChatCompletionMessage message = response.choices().get(0).message();
-        if (message.toolCalls().isPresent() && !message.toolCalls().get().isEmpty()) {
-            Object firstToolCall = message.toolCalls().get().get(0);
-            JsonNode toolCallNode = jsonMapper().valueToTree(firstToolCall);
-
-            String toolName = toolCallNode.path("function").path("name").asText(null);
-            String arguments = toolCallNode.path("function").path("arguments").asText(null);
-
-            if (toolName == null) {
-                System.out.println("Tool name not specified");
-            }
-
-            if (arguments == null) {
-                System.out.println("File path not specified in arguments");
-            }
-
-            if ("Read".equals(toolName)) {
-                JsonNode argsNode = jsonMapper().readTree(arguments);
-                JsonNode filePathNode = argsNode.get("file_path");
-                if (filePathNode == null || filePathNode.isNull()) {
-                    throw new RuntimeException("Read tool call missing file_path");
-                }
-
-                String filePath = filePathNode.asText();
-                byte[] bytes = Files.readAllBytes(Paths.get(filePath));
-
-                // IMPORTANT: write raw bytes, no extra newline/formatting
-                System.out.write(bytes);
-                System.out.flush();
-                return;
-            }
-        }
+        ChatCompletionCreateParams.Builder conversation =
+                ChatCompletionCreateParams.builder()
+                        .model("anthropic/claude-haiku-4.5")
+                        .addTool(readTool)
+                        .addUserMessage(prompt);
         
         // You can use print statements as follows for debugging, they'll be visible when running tests.
         System.err.println("Logs from your program will appear here!");
 
-        System.out.print(response.choices().get(0).message().content().orElse(""));
-        
+        //Agent loop implementation
+        int totalIterations = 25;
+        for (int iter = 0; iter < totalIterations; iter++) {
+            ChatCompletion response = client.chat().completions().create(conversation.build());
+            if (response.choices().isEmpty()) throw new RuntimeException("no choices in response");
+
+            ChatCompletionMessage message = response.choices().get(0).message();
+
+            // Always append assistant message
+            conversation.addMessage(message);
+
+            if (message.toolCalls().isPresent() && !message.toolCalls().get().isEmpty()) {
+                for (Object toolCallObj : message.toolCalls().get()) {
+                    JsonNode toolCallNode = jsonMapper().valueToTree(toolCallObj);
+
+                    String toolCallId = toolCallNode.path("id").asText(null);
+                    String toolName = toolCallNode.path("function").path("name").asText(null);
+                    String arguments = toolCallNode.path("function").path("arguments").asText(null);
+
+                    if (toolCallId == null) {
+                        throw new RuntimeException("tool call missing id");
+                    }
+
+                    if (toolName == null) {
+                        throw new RuntimeException("Tool name not specified");
+                    }
+
+                    if (arguments == null) {
+                        throw new RuntimeException("File path not specified in arguments");
+                    }
+
+                    if (!"Read".equals(toolName))
+                        throw new RuntimeException("unsupported tool: " + toolName);
+
+                    JsonNode argsNode = jsonMapper().readTree(arguments);
+                    JsonNode filePathNode = argsNode.get("file_path");
+                    if (filePathNode == null || filePathNode.isNull()) {
+                        throw new RuntimeException("Read tool call missing file_path");
+                    }
+
+                    String filePath = filePathNode.asText();
+                    byte[] bytes = Files.readAllBytes(Paths.get(filePath));
+                    String toolResult = new String(bytes, StandardCharsets.UTF_8);
+
+                    conversation.addMessage(
+                            ChatCompletionToolMessageParam.builder()
+                                    .toolCallId(toolCallId)
+                                    .content(toolResult)
+                                    .build());
+                }
+                continue;
+            }
+            System.out.print(message.content().orElse(""));
+            System.out.flush();
+            return;
+        }
+        throw new RuntimeException("agent loop exceeded max iterations (" + totalIterations + ")");
     }
 }
 
