@@ -1,6 +1,8 @@
+import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.nio.file.Paths;
-import java.nio.file.Path;
+import java.nio.file.Path; 
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -102,11 +104,37 @@ public class Main {
                                         .parameters(JsonValue.from(writeParameters))
                                         .build()).build();
 
+        //BASH tool parameters
+
+        Map<String, Object> bashCommandSchema = new HashMap<String, Object>();
+        writeContentSchema.put("type", "string");
+        writeContentSchema.put("description", "The command to execute");
+
+        Map<String, Object> bashProperties = new HashMap<String, Object>();
+        writeProperties.put("command", bashCommandSchema);
+
+        List<String> bashRequired = Arrays.asList("command");
+
+        Map<String, Object> bashParameters = new HashMap<String, Object>();
+        writeParameters.put("type", "object");
+        writeParameters.put("properties", bashProperties);
+        writeParameters.put("required", bashRequired);
+        
+        ChatCompletionTool bashTool =
+                ChatCompletionTool.builder()
+                        .type(JsonValue.from("function"))
+                        .function(FunctionDefinition.builder()
+                                        .name("Bash")
+                                        .description("Execute a bash command")
+                                        .parameters(JsonValue.from(bashParameters))
+                                        .build()).build();                                
+        
         ChatCompletionCreateParams.Builder conversation =
                 ChatCompletionCreateParams.builder()
                         .model("anthropic/claude-haiku-4.5")
                         .addTool(readTool)
                         .addTool(writeTool)
+                        .addTool(bashTool)
                         .addUserMessage(prompt);
         
         // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -181,7 +209,38 @@ public class Main {
                                         .content("Write complete")
                                         .build());
 
-                    }else {
+                    } else if("Bash".equals(toolName)){
+                        JsonNode argsNode = jsonMapper().readTree(arguments);
+                        JsonNode commandNode = argsNode.get("command");
+
+                        ProcessBuilder processBuilder = new ProcessBuilder();
+
+                        processBuilder.command("bash", "-c", commandNode.asText());
+                        Process process = processBuilder.start();
+
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+                        StringBuilder output = new StringBuilder();
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            output.append(line + "\\n");
+                        }
+
+                        // Wait for the process to complete and get the exit value
+                        int exitVal = process.waitFor();
+                        if (exitVal == 0) {
+                            System.out.println("Success!");
+                            System.out.println(output.toString());
+                            conversation.addMessage(ChatCompletionToolMessageParam.builder()
+                                    .toolCallId(toolCallId)
+                                    .content(output.toString())
+                                    .build());
+
+                        } else {
+                        // Handle error
+                            System.out.println("Command failed with exit code: " + exitVal);
+                        }
+                    }
+                    else {
                         throw new RuntimeException("Unsupported tool");
                     }    
                 }
