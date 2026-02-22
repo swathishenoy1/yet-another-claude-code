@@ -1,5 +1,6 @@
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -72,12 +73,40 @@ public class Main {
                                         .parameters(JsonValue.from(parameters))
                                         .build()).build();
 
+        //Write Tool parameters
+        Map<String, Object> writeFilePathSchema = new HashMap<String, Object>();
+        writeFilePathSchema.put("type", "string");
+        writeFilePathSchema.put("description", "The path to the file to read");
+
+        Map<String, Object> writeContentSchema = new HashMap<String, Object>();
+        writeContentSchema.put("type", "string");
+        writeContentSchema.put("description", "The content to write to the file");
+
+        Map<String, Object> writeProperties = new HashMap<String, Object>();
+        writeProperties.put("file_path", writeFilePathSchema);
+        writeProperties.put("content", writeContentSchema);
+
+        List<String> writeRequired = Arrays.asList("file_path", "content");
+
+        Map<String, Object> writeParameters = new HashMap<String, Object>();
+        writeParameters.put("type", "object");
+        writeParameters.put("properties", writeProperties);
+        writeParameters.put("required", writeRequired);
         
+        ChatCompletionTool writeTool =
+                ChatCompletionTool.builder()
+                        .type(JsonValue.from("function"))
+                        .function(FunctionDefinition.builder()
+                                        .name("Write")
+                                        .description("Write the content to a file")
+                                        .parameters(JsonValue.from(writeParameters))
+                                        .build()).build();
 
         ChatCompletionCreateParams.Builder conversation =
                 ChatCompletionCreateParams.builder()
                         .model("anthropic/claude-haiku-4.5")
                         .addTool(readTool)
+                        .addTool(writeTool)
                         .addUserMessage(prompt);
         
         // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -114,24 +143,47 @@ public class Main {
                         throw new RuntimeException("File path not specified in arguments");
                     }
 
-                    if (!"Read".equals(toolName))
-                        throw new RuntimeException("unsupported tool: " + toolName);
+                    if ("Read".equals(toolName)){
+                        JsonNode argsNode = jsonMapper().readTree(arguments);
+                        JsonNode filePathNode = argsNode.get("file_path");
+                        if (filePathNode == null || filePathNode.isNull()) {
+                            throw new RuntimeException("Read tool call missing file_path");
+                        }
 
-                    JsonNode argsNode = jsonMapper().readTree(arguments);
-                    JsonNode filePathNode = argsNode.get("file_path");
-                    if (filePathNode == null || filePathNode.isNull()) {
-                        throw new RuntimeException("Read tool call missing file_path");
-                    }
+                        String filePath = filePathNode.asText();
+                        byte[] bytes = Files.readAllBytes(Paths.get(filePath));
+                        String toolResult = new String(bytes, StandardCharsets.UTF_8);
 
-                    String filePath = filePathNode.asText();
-                    byte[] bytes = Files.readAllBytes(Paths.get(filePath));
-                    String toolResult = new String(bytes, StandardCharsets.UTF_8);
-
-                    conversation.addMessage(
+                        conversation.addMessage(
                             ChatCompletionToolMessageParam.builder()
                                     .toolCallId(toolCallId)
                                     .content(toolResult)
                                     .build());
+                    } else if("Write".equals(toolName)){
+                        JsonNode argsNode = jsonMapper().readTree(arguments);
+                        JsonNode filePathNode = argsNode.get("file_path");
+                        JsonNode contentNode = argsNode.get("content");
+
+                        String filePath = filePathNode.asText();
+                        String fileContent = contentNode.asText();
+
+                        Path path = Paths.get(filePath);
+                        Path parent = path.getParent();
+                        if (parent != null) {
+                            Files.createDirectories(parent);
+                        }
+
+                        Files.write(path, fileContent.getBytes((StandardCharsets.UTF_8)));
+
+                        conversation.addMessage(
+                                ChatCompletionToolMessageParam.builder()
+                                        .toolCallId(toolCallId)
+                                        .content("Write complete")
+                                        .build());
+
+                    }else {
+                        throw new RuntimeException("Unsupported tool");
+                    }    
                 }
                 continue;
             }
